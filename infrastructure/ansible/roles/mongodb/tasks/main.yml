@@ -1,0 +1,133 @@
+---
+- name: Install MongoDB prerequisites
+  ansible.builtin.apt:
+    name:
+      - curl
+      - gnupg
+      - ca-certificates
+    state: present
+    update_cache: true
+
+- name: Download MongoDB signing key
+  ansible.builtin.get_url:
+    url: https://pgp.mongodb.com/server-8.0.asc
+    dest: /tmp/mongodb-server-8.0.asc
+    mode: "0644"
+
+- name: Install MongoDB signing key
+  ansible.builtin.command:
+    cmd: >
+      gpg --dearmor
+      --yes
+      --output /usr/share/keyrings/mongodb-server-8.0.gpg
+      /tmp/mongodb-server-8.0.asc
+  args:
+    creates: /usr/share/keyrings/mongodb-server-8.0.gpg
+
+- name: Add MongoDB repository
+  ansible.builtin.apt_repository:
+    repo: >-
+      deb [arch=amd64 signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg]
+      https://repo.mongodb.org/apt/ubuntu
+      noble/mongodb-org/8.0 multiverse
+    filename: mongodb-org-8.0
+    state: present
+
+- name: Install MongoDB
+  ansible.builtin.apt:
+    name: mongodb-org
+    state: present
+    update_cache: true
+
+- name: Enable and start MongoDB without authentication initially
+  ansible.builtin.service:
+    name: mongod
+    state: started
+    enabled: true
+
+- name: Wait until MongoDB is available
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: 27017
+    timeout: 60
+
+- name: Check whether MongoDB administrator exists
+  ansible.builtin.shell: |
+    mongosh --quiet --eval '
+      db.getSiblingDB("admin").getUser("{{ mongodb_admin_user }}")
+    '
+  register: mongodb_admin_check
+  changed_when: false
+  failed_when: false
+  no_log: true
+
+- name: Create MongoDB administrator
+  ansible.builtin.shell: |
+    mongosh --quiet --eval '
+      db.getSiblingDB("admin").createUser({
+        user: "{{ mongodb_admin_user }}",
+        pwd: "{{ mongodb_admin_password }}",
+        roles: [
+          {
+            role: "root",
+            db: "admin"
+          }
+        ]
+      })
+    '
+  when: mongodb_admin_user not in mongodb_admin_check.stdout
+  no_log: true
+
+- name: Create application database user
+  ansible.builtin.shell: |
+    mongosh --quiet \
+      --username "{{ mongodb_admin_user }}" \
+      --password "{{ mongodb_admin_password }}" \
+      --authenticationDatabase admin \
+      --eval '
+        const applicationDatabase =
+          db.getSiblingDB("{{ mongodb_database }}");
+
+        if (!applicationDatabase.getUser("{{ mongodb_app_user }}")) {
+          applicationDatabase.createUser({
+            user: "{{ mongodb_app_user }}",
+            pwd: "{{ mongodb_app_password }}",
+            roles: [
+              {
+                role: "readWrite",
+                db: "{{ mongodb_database }}"
+              }
+            ]
+          });
+        }
+      '
+  no_log: true
+
+- name: Deploy secured MongoDB configuration
+  ansible.builtin.template:
+    src: mongod.conf.j2
+    dest: /etc/mongod.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart MongoDB
+
+- name: Allow SSH from public subnet through UFW
+  community.general.ufw:
+    rule: allow
+    port: "22"
+    proto: tcp
+    src: "{{ public_subnet_cidr }}"
+
+- name: Allow MongoDB from web server through UFW
+  community.general.ufw:
+    rule: allow
+    port: "27017"
+    proto: tcp
+    src: "{{ web_server_private_ip }}"
+
+- name: Enable UFW with incoming traffic denied
+  community.general.ufw:
+    state: enabled
+    policy: deny
+    direction: incoming

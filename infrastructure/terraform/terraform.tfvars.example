@@ -1,0 +1,6 @@
+aws_region        = "ap-south-1"
+availability_zone = "ap-south-1a"
+key_name          = "travelmemory-key"
+instance_type     = "t3.micro"
+
+my_ip = "223.178.87.203/32"

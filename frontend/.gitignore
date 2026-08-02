@@ -21,3 +21,28 @@
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraform.tfstate.lock.info
+
+# AWS and SSH secrets
+*.pem
+*.key
+.aws/
+
+# Application secrets
+.env
+.env.*
+node_modules/
+
+# Ansible
+*.retry
+vault-password.txt

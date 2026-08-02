@@ -1,0 +1,18 @@
+---
+- name: Apply common configuration
+  hosts: all
+  become: true
+  roles:
+    - common
+
+- name: Configure private MongoDB server
+  hosts: database
+  become: true
+  roles:
+    - mongodb
+
+- name: Deploy TravelMemory application
+  hosts: web
+  become: true
+  roles:
+    - web

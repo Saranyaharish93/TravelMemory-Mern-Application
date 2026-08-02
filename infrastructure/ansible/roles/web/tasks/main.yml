@@ -1,0 +1,151 @@
+---
+- name: Install Node.js prerequisites
+  ansible.builtin.apt:
+    name:
+      - curl
+      - ca-certificates
+      - gnupg
+      - nginx
+      - rsync
+    state: present
+    update_cache: true
+
+- name: Add NodeSource repository
+  ansible.builtin.shell: |
+    curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+  args:
+    creates: /etc/apt/sources.list.d/nodesource.list
+
+- name: Install Node.js
+  ansible.builtin.apt:
+    name: nodejs
+    state: present
+    update_cache: true
+
+- name: Create application directory
+  ansible.builtin.file:
+    path: "{{ app_directory }}"
+    state: directory
+    owner: ubuntu
+    group: ubuntu
+    mode: "0755"
+
+- name: Transfer application source to web server
+  ansible.posix.synchronize:
+    src: "{{ app_source_directory }}/"
+    dest: "{{ app_directory }}/"
+    recursive: true
+    delete: false
+    rsync_opts:
+      - "--exclude=.git"
+      - "--exclude=node_modules"
+      - "--exclude=infrastructure/terraform/.terraform"
+      - "--exclude=*.tfstate"
+      - "--exclude=*.tfplan"
+      - "--exclude=.env"
+  become: false
+
+- name: Set application ownership
+  ansible.builtin.file:
+    path: "{{ app_directory }}"
+    state: directory
+    owner: ubuntu
+    group: ubuntu
+    recurse: true
+
+- name: Install backend dependencies
+  community.general.npm:
+    path: "{{ app_directory }}/{{ backend_folder }}"
+    production: true
+  become_user: ubuntu
+
+- name: Install frontend dependencies
+  community.general.npm:
+    path: "{{ app_directory }}/{{ frontend_folder }}"
+  become_user: ubuntu
+
+- name: Create backend environment file
+  ansible.builtin.template:
+    src: backend.env.j2
+    dest: "{{ app_directory }}/{{ backend_folder }}/.env"
+    owner: ubuntu
+    group: ubuntu
+    mode: "0600"
+  notify: Restart TravelMemory
+
+- name: Build React frontend
+  ansible.builtin.command:
+    cmd: npm run build
+    chdir: "{{ app_directory }}/{{ frontend_folder }}"
+  become_user: ubuntu
+  environment:
+    CI: "false"
+
+- name: Install backend systemd service
+  ansible.builtin.template:
+    src: travelmemory.service.j2
+    dest: /etc/systemd/system/travelmemory.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Reload systemd
+    - Restart TravelMemory
+
+- name: Install Nginx configuration
+  ansible.builtin.template:
+    src: nginx-travelmemory.conf.j2
+    dest: /etc/nginx/sites-available/travelmemory
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart Nginx
+
+- name: Enable TravelMemory Nginx configuration
+  ansible.builtin.file:
+    src: /etc/nginx/sites-available/travelmemory
+    dest: /etc/nginx/sites-enabled/travelmemory
+    state: link
+  notify: Restart Nginx
+
+- name: Remove default Nginx configuration
+  ansible.builtin.file:
+    path: /etc/nginx/sites-enabled/default
+    state: absent
+  notify: Restart Nginx
+
+- name: Validate Nginx configuration
+  ansible.builtin.command:
+    cmd: nginx -t
+  changed_when: false
+
+- name: Enable and start backend
+  ansible.builtin.systemd:
+    name: travelmemory
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Enable and start Nginx
+  ansible.builtin.service:
+    name: nginx
+    enabled: true
+    state: started
+
+- name: Permit SSH through UFW
+  community.general.ufw:
+    rule: allow
+    port: "22"
+    proto: tcp
+
+- name: Permit HTTP through UFW
+  community.general.ufw:
+    rule: allow
+    port: "80"
+    proto: tcp
+
+- name: Enable UFW with incoming traffic denied
+  community.general.ufw:
+    state: enabled
+    policy: deny
+    direction: incoming
